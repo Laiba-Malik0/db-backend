@@ -1,9 +1,56 @@
 
 import express from "express";
+import multer from "multer";
 import db from "../config/db.js";
+import cloudinary from "../config/cloudinary.js";
 import { verifyToken, allowRoles } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
+
+// IMAGE UPLOAD CONFIGURATION
+const storage = multer.memoryStorage();
+
+const upload = multer({
+    storage,
+    limits: {
+        fileSize: 5 * 1024 * 1024 // 5 MB
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = [
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/jpg"
+        ];
+
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error("Only JPG, JPEG, PNG and WEBP images are allowed"));
+        }
+    }
+});
+
+// CLOUDINARY UPLOAD FUNCTION
+const uploadImage = (file) => {
+    return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+            {
+                folder: "verifychain/products",
+                resource_type: "image"
+            },
+            (error, result) => {
+                if (error) {
+                    return reject(error);
+                }
+
+                resolve(result.secure_url);
+            }
+        );
+
+        stream.end(file.buffer);
+    });
+};
 
 // GET ALL PRODUCTS
 router.get("/", (req, res) => {
@@ -14,6 +61,7 @@ router.get("/", (req, res) => {
             p.product_code,
             p.category,
             p.description,
+            p.image_url,
             p.status,
             p.created_at,
             b.brand_id,
@@ -41,126 +89,202 @@ router.get("/", (req, res) => {
 });
 
 // ADD PRODUCT (ADMIN ONLY)
-router.post("/", verifyToken, allowRoles("admin"), (req, res) => {
-    const {
-        brand_id,
-        product_name,
-        product_code,
-        category,
-        description
-    } = req.body;
+router.post(
+    "/",
+    verifyToken,
+    allowRoles("admin"),
+    upload.single("image"),
+    async (req, res) => {
+        try {
+            const {
+                brand_id,
+                product_name,
+                product_code,
+                category,
+                description
+            } = req.body;
 
-    if (!brand_id || !product_name || !product_code) {
-        return res.status(400).json({
-            success: false,
-            message: "Brand ID, product name and product code are required"
-        });
-    }
-
-    const sql = `
-        INSERT INTO \`PRODUCT\`
-        (brand_id, product_name, product_code, category, description)
-        VALUES (?, ?, ?, ?, ?)
-    `;
-
-    db.query(
-        sql,
-        [
-            brand_id,
-            product_name.trim(),
-            product_code.trim(),
-            category || null,
-            description || null
-        ],
-        (err, result) => {
-            if (err) {
-                if (err.code === "ER_DUP_ENTRY") {
-                    return res.status(409).json({
-                        success: false,
-                        message: "Product code already exists"
-                    });
-                }
-
-                if (err.code === "ER_NO_REFERENCED_ROW_2") {
-                    return res.status(400).json({
-                        success: false,
-                        message: "Brand does not exist"
-                    });
-                }
-
-                console.error("Add product error:", err.message);
-                return res.status(500).json({
+            if (!brand_id || !product_name?.trim() || !product_code?.trim()) {
+                return res.status(400).json({
                     success: false,
-                    message: "Could not add product"
+                    message: "Brand ID, product name and product code are required"
                 });
             }
 
-            return res.status(201).json({
-                success: true,
-                message: "Product added successfully",
-                product_id: result.insertId
+            let image_url = null;
+
+            if (req.file) {
+                image_url = await uploadImage(req.file);
+            }
+
+            const sql = `
+                INSERT INTO \`PRODUCT\`
+                (brand_id, product_name, product_code, category, description, image_url)
+                VALUES (?, ?, ?, ?, ?, ?)
+            `;
+
+            db.query(
+                sql,
+                [
+                    brand_id,
+                    product_name.trim(),
+                    product_code.trim(),
+                    category || null,
+                    description || null,
+                    image_url
+                ],
+                (err, result) => {
+                    if (err) {
+                        if (err.code === "ER_DUP_ENTRY") {
+                            return res.status(409).json({
+                                success: false,
+                                message: "Product code already exists"
+                            });
+                        }
+
+                        if (err.code === "ER_NO_REFERENCED_ROW_2") {
+                            return res.status(400).json({
+                                success: false,
+                                message: "Brand does not exist"
+                            });
+                        }
+
+                        console.error("Add product error:", err.message);
+
+                        return res.status(500).json({
+                            success: false,
+                            message: "Could not add product"
+                        });
+                    }
+
+                    return res.status(201).json({
+                        success: true,
+                        message: "Product added successfully",
+                        product_id: result.insertId,
+                        image_url
+                    });
+                }
+            );
+        } catch (error) {
+            console.error("Image upload error:", error.message);
+
+            return res.status(500).json({
+                success: false,
+                message: "Image upload failed"
             });
         }
-    );
-});
+    }
+);
 
 // UPDATE PRODUCT (ADMIN ONLY)
-router.put("/:id", verifyToken, allowRoles("admin"), (req, res) => {
-    const {
-        brand_id,
-        product_name,
-        product_code,
-        category,
-        description
-    } = req.body;
+router.put(
+    "/:id",
+    verifyToken,
+    allowRoles("admin"),
+    upload.single("image"),
+    async (req, res) => {
+        try {
+            const {
+                brand_id,
+                product_name,
+                product_code,
+                category,
+                description
+            } = req.body;
 
-    if (!brand_id || !product_name || !product_code) {
-        return res.status(400).json({
-            success: false,
-            message: "Brand ID, product name and product code are required"
-        });
-    }
-
-    const sql = `
-        UPDATE \`PRODUCT\`
-        SET brand_id = ?, product_name = ?, product_code = ?,
-            category = ?, description = ?
-        WHERE product_id = ?
-    `;
-
-    db.query(
-        sql,
-        [
-            brand_id,
-            product_name.trim(),
-            product_code.trim(),
-            category || null,
-            description || null,
-            req.params.id
-        ],
-        (err, result) => {
-            if (err) {
-                console.error("Update product error:", err.message);
-                return res.status(500).json({
+            if (!brand_id || !product_name?.trim() || !product_code?.trim()) {
+                return res.status(400).json({
                     success: false,
-                    message: "Could not update product"
+                    message: "Brand ID, product name and product code are required"
                 });
             }
 
-            if (result.affectedRows === 0) {
-                return res.status(404).json({
-                    success: false,
-                    message: "Product not found"
-                });
+            let sql;
+            let values;
+
+            if (req.file) {
+                const image_url = await uploadImage(req.file);
+
+                sql = `
+                    UPDATE \`PRODUCT\`
+                    SET brand_id = ?,
+                        product_name = ?,
+                        product_code = ?,
+                        category = ?,
+                        description = ?,
+                        image_url = ?
+                    WHERE product_id = ?
+                `;
+
+                values = [
+                    brand_id,
+                    product_name.trim(),
+                    product_code.trim(),
+                    category || null,
+                    description || null,
+                    image_url,
+                    req.params.id
+                ];
+            } else {
+                sql = `
+                    UPDATE \`PRODUCT\`
+                    SET brand_id = ?,
+                        product_name = ?,
+                        product_code = ?,
+                        category = ?,
+                        description = ?
+                    WHERE product_id = ?
+                `;
+
+                values = [
+                    brand_id,
+                    product_name.trim(),
+                    product_code.trim(),
+                    category || null,
+                    description || null,
+                    req.params.id
+                ];
             }
 
-            return res.json({
-                success: true,
-                message: "Product updated successfully"
+            db.query(sql, values, (err, result) => {
+                if (err) {
+                    if (err.code === "ER_DUP_ENTRY") {
+                        return res.status(409).json({
+                            success: false,
+                            message: "Product code already exists"
+                        });
+                    }
+
+                    console.error("Update product error:", err.message);
+
+                    return res.status(500).json({
+                        success: false,
+                        message: "Could not update product"
+                    });
+                }
+
+                if (result.affectedRows === 0) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Product not found"
+                    });
+                }
+
+                return res.json({
+                    success: true,
+                    message: "Product updated successfully"
+                });
+            });
+        } catch (error) {
+            console.error("Image update error:", error.message);
+
+            return res.status(500).json({
+                success: false,
+                message: "Image upload failed"
             });
         }
-    );
-});
+    }
+);
 
 // ARCHIVE / RESTORE PRODUCT (ADMIN ONLY)
 router.patch("/:id/status", verifyToken, allowRoles("admin"), (req, res) => {
@@ -183,6 +307,7 @@ router.patch("/:id/status", verifyToken, allowRoles("admin"), (req, res) => {
     db.query(sql, [status, productId], (err, result) => {
         if (err) {
             console.error("Update product status error:", err.message);
+
             return res.status(500).json({
                 success: false,
                 message: "Could not update product status"
@@ -242,6 +367,7 @@ router.delete("/:id", verifyToken, allowRoles("admin"), (req, res) => {
                 }
 
                 console.error("Delete product error:", err.message);
+
                 return res.status(500).json({
                     success: false,
                     message: "Could not delete product"

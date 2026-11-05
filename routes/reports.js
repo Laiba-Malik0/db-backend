@@ -168,12 +168,10 @@ router.patch(
             });
         }
 
-        if (
-            !["pending", "reviewed", "resolved"].includes(report_status)
-        ) {
+        if (!["pending", "resolved"].includes(report_status)) {
             return res.status(400).json({
                 success: false,
-                message: "Status must be pending, reviewed, or resolved"
+                message: "Status must be pending or resolved"
             });
         }
 
